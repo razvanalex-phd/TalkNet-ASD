@@ -14,8 +14,7 @@ setup(
         "TalkNetASD.utils",
     ],
     install_requires=[
-        "torch>=1.6.0",
-        "torchaudio>=0.6.0",
+        "torch",
         "numpy",
         "scipy",
         "scikit-learn",
