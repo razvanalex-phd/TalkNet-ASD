@@ -3,8 +3,8 @@ import subprocess
 
 import numpy as np
 import torch
-from torchvision.transforms import Resize
 import torch.nn.functional as F
+import torch_tensorrt
 
 from .box_utils import nms_
 from .nets import S3FDNet
@@ -20,6 +20,7 @@ class S3FD:
         state_dict = torch.load(model_path, map_location=self.device)
         self.net.load_state_dict(state_dict)
         self.net.eval()
+        self.compiled = False
 
     def download(self, path):
         if os.path.isfile(path) == False:
@@ -42,6 +43,22 @@ class S3FD:
         for s in scales:
             scaled_img = F.interpolate(images.float(), size=(int(s * h), int(s * w)))
             scaled_img -= self.img_mean
+
+            if not self.compiled:
+                self.net = torch_tensorrt.compile(
+                    self.net,
+                    inputs=[
+                        torch_tensorrt.Input(
+                            min_shape=[1, c, h, w],
+                            opt_shape=[b, c, h, w],
+                            max_shape=[b, c, h, w],
+                            dtype=torch.float16,
+                        )
+                    ],
+                    enabled_precisions={torch_tensorrt.dtype.half},  # Run with FP16
+                )
+                self.compiled = True
+
             detections = self.net(scaled_img)
             scale = torch.Tensor([w, h, w, h])
 
@@ -49,18 +66,10 @@ class S3FD:
             pts = detections[:, :, :, 1:] * scale
 
             for b_idx in range(b):
-                bboxes = (
-                    torch.hstack(
-                        (
-                            pts[b_idx, scores_mask[b_idx]],
-                            detections[b_idx, :, :, 0][scores_mask[b_idx]].reshape(
-                                -1, 1
-                            ),
-                        )
-                    )
-                    .cpu()
-                    .numpy()
-                )
+                bboxes = torch.hstack((
+                    pts[b_idx, scores_mask[b_idx]],
+                    detections[b_idx, :, :, 0][scores_mask[b_idx]].reshape(-1, 1))
+                ).cpu().numpy()
                 keep = nms_(bboxes, 0.1)
                 batch_bboxes.append(bboxes[keep])
 
