@@ -3,11 +3,9 @@ import subprocess
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-import torch_tensorrt
+from torchvision.ops import nms
 
-from .box_utils import nms_
-from .nets import S3FDNet
+from .nets import S3FDModel
 
 
 class S3FD:
@@ -15,12 +13,11 @@ class S3FD:
         self.device = device
         self.download(path)
 
-        self.net = S3FDNet(device=self.device).to(self.device)
+        self.net = S3FDModel(device=self.device).to(self.device)
         model_path = os.path.join(os.getcwd(), path)
         state_dict = torch.load(model_path, map_location=self.device)
-        self.net.load_state_dict(state_dict)
+        self.net.s3fd.load_state_dict(state_dict)
         self.net.eval()
-        self.compiled = False
 
     def download(self, path):
         if os.path.isfile(path) == False:
@@ -33,44 +30,29 @@ class S3FD:
         self.img_mean = self.img_mean[:, np.newaxis, np.newaxis]
         self.img_mean = self.img_mean.float().cuda()
 
+    def compile(self, inputs):
+        self.net.compile(inputs)
+
     @torch.no_grad()
-    def detect_faces(self, images, conf_th=0.8, scales=[1]):
-        images = torch.permute(images, (0, 3, 1, 2))
+    def detect_faces(self, images, scale, conf_th=0.8):
+        # images must be already scaled down
+        # scale contains [w, h, w, h] of the original image size
         b, c, h, w = images.shape
 
         batch_bboxes = []
 
-        for s in scales:
-            scaled_img = F.interpolate(images.float(), size=(int(s * h), int(s * w)))
-            scaled_img -= self.img_mean
+        images -= self.img_mean
+        detections = self.net(images).to(self.device)
 
-            if not self.compiled:
-                self.net = torch_tensorrt.compile(
-                    self.net,
-                    inputs=[
-                        torch_tensorrt.Input(
-                            min_shape=[1, c, h, w],
-                            opt_shape=[b, c, h, w],
-                            max_shape=[b, c, h, w],
-                            dtype=torch.float16,
-                        )
-                    ],
-                    enabled_precisions={torch_tensorrt.dtype.half},  # Run with FP16
-                )
-                self.compiled = True
+        scores_mask = detections[:, :, :, 0] > conf_th
+        pts = detections[:, :, :, 1:] * scale
 
-            detections = self.net(scaled_img)
-            scale = torch.Tensor([w, h, w, h])
-
-            scores_mask = detections[:, :, :, 0] > conf_th
-            pts = detections[:, :, :, 1:] * scale
-
-            for b_idx in range(b):
-                bboxes = torch.hstack((
-                    pts[b_idx, scores_mask[b_idx]],
-                    detections[b_idx, :, :, 0][scores_mask[b_idx]].reshape(-1, 1))
-                ).cpu().numpy()
-                keep = nms_(bboxes, 0.1)
-                batch_bboxes.append(bboxes[keep])
+        for b_idx in range(b):
+            bboxes = torch.hstack((
+                pts[b_idx, scores_mask[b_idx]],
+                detections[b_idx, :, :, 0][scores_mask[b_idx]].reshape(-1, 1))
+            )
+            keep = nms(bboxes[:, :4], bboxes[:, 4], 0.1)
+            batch_bboxes.append(bboxes[keep])
 
         return batch_bboxes

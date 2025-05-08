@@ -103,11 +103,7 @@ class S3FDNet(nn.Module):
             nn.Conv2d(256, 2, 3, 1, padding=1),
         ])
 
-        self.softmax = nn.Softmax(dim=-1)
-        self.detect = Detect()
-
     def forward(self, x):
-        size = x.size()[2:]
         sources = list()
         loc = list()
         conf = list()
@@ -161,14 +157,38 @@ class S3FDNet(nn.Module):
         loc = torch.cat([o.view(o.size(0), -1) for o in loc], 1)
         conf = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
 
-        with torch.no_grad():
-            self.priorbox = PriorBox(size, features_maps)
-            self.priors = self.priorbox.forward()
+        return loc, conf, torch.tensor(features_maps)
 
-        output = self.detect.forward(
+
+class S3FDModel(nn.Module):
+    def __init__(self, device='cuda'):
+        super().__init__()
+        self.s3fd = S3FDNet(device)
+        self.device = device
+        self.softmax = nn.Softmax(dim=-1)
+        self.detect = Detect() # top_k=750, nms_top_k=500
+
+    def compile(self, inputs):
+        import torch_tensorrt
+
+        self.s3fd = torch_tensorrt.compile(
+            self.s3fd,
+            inputs=inputs,
+            enabled_precisions={torch.float16},  # Run with FP16
+        )
+
+    @torch.no_grad()
+    def forward(self, x):
+        size = x.size()[2:]
+        loc, conf, features_maps = self.s3fd(x)
+
+        priorbox = PriorBox(size, features_maps)
+        priors = priorbox.forward()
+        
+        output = self.detect(
             loc.view(loc.size(0), -1, 4),
             self.softmax(conf.view(conf.size(0), -1, 2)),
-            self.priors.type(type(x.data)).to(self.device)
+            priors.type(type(x)).to(self.device)
         )
 
         return output

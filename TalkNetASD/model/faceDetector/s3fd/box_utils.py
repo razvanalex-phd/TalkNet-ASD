@@ -1,7 +1,7 @@
 import numpy as np
 from itertools import product as product
 import torch
-from torch.autograd import Function
+import torch.nn as nn
 
 
 def nms_(dets, thresh):
@@ -100,10 +100,10 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
             break
         idx = idx[:-1]  # remove kept element from view
         # load bboxes of next highest vals
-        torch.index_select(x1, 0, idx, out=xx1)
-        torch.index_select(y1, 0, idx, out=yy1)
-        torch.index_select(x2, 0, idx, out=xx2)
-        torch.index_select(y2, 0, idx, out=yy2)
+        xx1 = torch.index_select(x1, 0, idx)
+        yy1 = torch.index_select(y1, 0, idx)
+        xx2 = torch.index_select(x2, 0, idx)
+        yy2 = torch.index_select(y2, 0, idx)
         # store element-wise max with next highest score
         xx1 = torch.clamp(xx1, min=x1[i])
         yy1 = torch.clamp(yy1, min=y1[i])
@@ -126,12 +126,13 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
     return keep, count
 
 
-class Detect(object):
+
+class Detect(nn.Module):
 
     def __init__(self, num_classes=2,
                     top_k=750, nms_thresh=0.3, conf_thresh=0.05,
                     variance=[0.1, 0.2], nms_top_k=5000):
-        
+        super().__init__()
         self.num_classes = num_classes
         self.top_k = top_k
         self.nms_thresh = nms_thresh
@@ -140,7 +141,6 @@ class Detect(object):
         self.nms_top_k = nms_top_k
 
     def forward(self, loc_data, conf_data, prior_data):
-
         num = loc_data.size(0)
         num_priors = prior_data.size(0)
 
@@ -173,7 +173,7 @@ class Detect(object):
         return output
 
 
-class PriorBox(object):
+class PriorBox:
 
     def __init__(self, input_size, feature_maps,
                     variance=[0.1, 0.2],
@@ -181,7 +181,7 @@ class PriorBox(object):
                     steps=[4, 8, 16, 32, 64, 128],
                     clip=False):
 
-        super(PriorBox, self).__init__()
+        super().__init__()
 
         self.imh = input_size[0]
         self.imw = input_size[1]
